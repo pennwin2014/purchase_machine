@@ -1125,6 +1125,56 @@ void menu_purchase_input()
 	purchase_main();
 }
 
+void init_purchase_menu()
+{
+    struct pic_lst* main_menu_ptr;
+    char* main_menu_table[] =
+    {
+        PIC4, "消费",
+        PIC1, "参数设置",
+        PIC6, "关机",
+        NULL, NULL
+    };
+
+    main_menu_ptr = piclist_init();
+    if (NULL == main_menu_ptr)
+    {
+        error_exit(2, "初始化屏幕对象失败");
+    }
+    jpg_display(MAIN_DISP, 0, 0, DESKTOP_JPG) ;  //gepspxs19.jpg //  ltby.jpg
+    jpg_stormem(MAIN_DISP, MAIN_DISP->bak_ptr, 0, 0, DESKTOP_JPG);
+
+    piclist_props_set(main_menu_ptr, main_menu_table, main_menu_property);
+    piclist_show(p16pos.main_disp, main_menu_ptr);
+    // 主菜单循环
+    while (1)
+    {
+        // CLEAR(MAIN_DISP, DISP_X_COOR - 5, DISP_Y_COOR - 5,
+        //       DISP_X_COOR + DISP_X_PIXEL + 10, DISP_Y_COOR + DISP_Y_PIXEL + 10);
+        CLEAR_SCREEN;
+        piclist_show(MAIN_DISP, main_menu_ptr);
+        lcd_160_upd();
+
+        int32 ret = piclist_key_manege(MAIN_DISP, main_menu_ptr, lcd_160_upd);
+        //LOG( ( LOG_DEBUG, "菜单按键，key=%d", ret ) );
+        switch (ret)
+        {
+        case 0:
+			menu_purchase_input();
+            break;
+        case 1:
+            sys_config();
+            break;
+        case 2:
+            sys_power_off();
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+
 void init_menu()
 {
     struct pic_lst* main_menu_ptr;

@@ -237,6 +237,32 @@ typedef struct
     p16_transdtl_t* transdtl;
 } write_card_param_t;
 
+static int do_retry_write_purchase_card(p16_card_context* cardctx,
+                               p16_transdtl_t* transdtl,
+                               size_t timeout)
+{
+    int ret;
+    // 重新充值初始化
+
+    char emsg[512] = {0};
+    ret = read_user_card(cardctx, emsg);
+    if(ret)
+        return -1;
+    ret = init_4_purchase(cardctx);
+    if(ret)
+        return -1;
+    encode_hex(cardctx->random_num, 4, transdtl->random);
+	ret = psam_purchase_mac(cardctx);
+	if(ret)
+		return -1;
+    encode_hex(cardctx->mac1, 4, transdtl->mac1);
+    SAFE_STR_CPY(cardctx->hostdate, transdtl->hostdate);
+    SAFE_STR_CPY(cardctx->hosttime, transdtl->hosttime);
+    return 0;
+
+}
+
+/*
 static int do_retry_write_card(p16_card_context* cardctx,
                                p16_transdtl_t* transdtl,
                                size_t timeout)
@@ -248,31 +274,20 @@ static int do_retry_write_card(p16_card_context* cardctx,
     ret = read_user_card(cardctx, emsg);
     if(ret)
         return -1;
-    ret = init_4_load(cardctx);
+    ret = init_4_purchase(cardctx);
     if(ret)
         return -1;
     encode_hex(cardctx->random_num, 4, transdtl->random);
+	ret = psam_purchase_mac(cardctx);
+	if(ret)
+		return -1;
     encode_hex(cardctx->mac1, 4, transdtl->mac1);
-
-    ret = svc_deposit_query(transdtl);
-    if(ret)
-    {
-        LOG((LOG_DEBUG, "query deposit error!"));
-        if(SVC_FAILED == ret)
-        {
-            // sprintf(tip, "重试时异常,%d\n %s", transdtl->errcode, transdtl->errmsg);
-            //disp_update_message(context, tip);
-            return -1;
-        }
-        return -1;
-    }
-    decode_hex(transdtl->mac2, 8, cardctx->mac2);
     SAFE_STR_CPY(cardctx->hostdate, transdtl->hostdate);
     SAFE_STR_CPY(cardctx->hosttime, transdtl->hosttime);
     return 0;
 
 }
-
+*/
 static int do_write_card(p16_card_context* cardctx,
                          p16_transdtl_t* transdtl,
                          size_t timeout)
@@ -300,18 +315,18 @@ static int do_write_card(p16_card_context* cardctx,
             continue;
         }
         // 判断写卡是否成功
-        ret = get_card_prove(cardctx);
+        ret = get_purchase_card_prove(cardctx);
         if(0 == ret)
-            return 0; // 充值成功
+            return 0; // 消费成功
         else if(-1 == ret)
             continue; // 读卡失败
         else
         {
             LOG((LOG_DEBUG, "上次写卡不成功，补写卡!"));
-            ret = do_retry_write_card(cardctx, transdtl, timeout);
+            ret = do_retry_write_purchase_card(cardctx, transdtl, timeout);
             if(!ret)
             {
-                write_card_ret = debit_4_load(cardctx);
+                write_card_ret = debit_4_purchase(cardctx);
                 if(0 == write_card_ret)
                 {
                     //disp_update_message(context, "写卡成功");
@@ -333,7 +348,7 @@ static int do_write_card_proxy(void* userp,
     CLEAR_SCREEN;
     printf_str(MAIN_DISP, DISP_X_COOR, DISP_Y_COOR, "等待写卡..." , 1);
     lcd_160_upd();
-    write_card_ret = debit_4_load(param->cardctx);
+    write_card_ret = debit_4_purchase(param->cardctx);
     // LOG((LOG_DEBUG, "do_write_card_proxy ok"));
     if(0 == write_card_ret)
     {
@@ -400,7 +415,7 @@ static int do_card_purchase(uint32 money)
     ret = do_request_card(DO_BEEP, cardphyid, &cardtype);
     if(ret)
     {
-        disp_msg("读卡失败，不能充值", 3);
+        disp_msg("读卡失败，不能扣费", 3);
         return -1;
     }
     if(memcmp(cardphyid, p16card.cardphyid, sizeof(cardphyid)) != 0)
@@ -447,7 +462,7 @@ static int do_card_purchase(uint32 money)
         disp_msg("向psam卡请求mac1失败" , 5);
         return ret;
     }
-
+	/*
     // 步骤5:消费确认
     ret = debit_4_purchase(&p16card);
     if(ret)
@@ -455,6 +470,7 @@ static int do_card_purchase(uint32 money)
         disp_msg("卡片消费确认失败" , 5);
         return ret;
     }
+	*/
 	
     //步骤6: 记录流水
     p16_transdtl_t transdtl;
@@ -468,8 +484,9 @@ static int do_card_purchase(uint32 money)
     SAFE_STR_CPY(transdtl.devphyid, p16pos.devphyid);
     transdtl.cardbefbal = p16card.cardbefbal;
     transdtl.paycnt = p16card.paycnt;
+    transdtl.dpscnt = p16card.dpscnt;
     transdtl.amount = money;
-    transdtl.payamt = p16card.payamt;
+   // transdtl.dpsamt = p16card.payamt; // 实际扣费金额
     transdtl.confirm = 0;
     transdtl.transflag = TRANS_INIT;
     transdtl.devseqno = p16pos.termseqno;
@@ -478,15 +495,35 @@ static int do_card_purchase(uint32 money)
     transdtl.termid = p16pos.termid;
     encode_hex(p16card.random_num, 4, transdtl.random);
     encode_hex(p16card.mac1, 4, transdtl.mac1);
-	
+
     ret = trans_add_record(&transdtl);
     if(ret)
     {
         disp_msg("设备故障,请联系管理员", 10);
         return -1;
     }
+	//步骤7: 写卡
+    SAFE_STR_CPY(p16card.hostdate, transdtl.hostdate);
+    SAFE_STR_CPY(p16card.hosttime, transdtl.hosttime);
+    int write_card_ret = write_card_timeout(&p16card , &transdtl , 45);
+    if(0 == write_card_ret)
+    {
+        transdtl.transflag = TRANS_WRITE_CARD_OK;
+    }
+    else
+    {
+        transdtl.transflag = TRANS_WRITE_CARD_FAILED;
+    }
+    encode_hex(p16card.tac, 4, transdtl.tac);
+    ret = trans_update_record(&transdtl);
+    if(ret)
+    {
+        beep(80);
+        disp_msg("设备故障, 请联系管理员", 10);
+        return -1;
+    }
     /*
-    //步骤7:打印
+    //步骤8:打印
     if(0 == write_card_ret)
     {
         beep(30);
@@ -1245,7 +1282,7 @@ void purchase_main()
 	jpg_stormem(MAIN_DISP, MAIN_DISP->bak_ptr, 0, 0, DESKTOP_JPG);
 
 	piclist_show(p16pos.main_disp, main_menu_ptr);
-	while(1)
+	//while(1)
 	{
 		CLEAR_SCREEN;
 		piclist_show(MAIN_DISP, main_menu_ptr);

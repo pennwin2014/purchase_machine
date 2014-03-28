@@ -103,14 +103,14 @@ static int8 do_initial_syspara()
         const char* paraval;
     } init_para[] =
     {
-        {"sys.password", "51719228"},
+        {"sys.password", "123456"},
         {"sys.remoteip", "192.168.1.200"},
         {"sys.remoteport", "8080"},
         {"sys.updatesvrip", "192.168.1.44"},
         {"dev.devphyid", ""},
-        {"dev.ip", "192.168.16.239"},
+        {"dev.ip", "192.168.1.23"},
         {"dev.netmask", "255.255.255.0"},
-        {"dev.gateway", "192.168.16.1"},
+        {"dev.gateway", "192.168.1.1"},
         {"sys.appid", "500000"},
         {"sys.appsecret", "dafd8bd1ca659d8ded20bbacc123"},
         {"svc.remotename", "192.168.1.200"},

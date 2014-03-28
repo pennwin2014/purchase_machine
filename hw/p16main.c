@@ -585,7 +585,7 @@ int main(int argc, char* const argv[])
     show_statusbar();
 
     // ÏÔÊ¾Ö÷²Ëµ¥
-	menu_purchase_input();
+	init_purchase_menu();
 
     return 0;
 }

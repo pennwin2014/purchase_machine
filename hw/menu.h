@@ -8,7 +8,7 @@ extern proptey	input_three_property[7];
 
 
 void init_menu();
-void menu_purchase_input();
+void init_purchase_menu();
 
 
 #endif // _P16_MENU_H_

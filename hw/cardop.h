@@ -21,6 +21,8 @@ int8 debit_4_purchase(p16_card_context* cardctx);
 int8 psam_purchase_mac(p16_card_context* cardctx);
 
 int8 get_card_prove(p16_card_context* cardctx);
+int8 get_purchase_card_prove(p16_card_context* cardctx);
+
 int8 sam_read_termno(uint8* termno);
 
 

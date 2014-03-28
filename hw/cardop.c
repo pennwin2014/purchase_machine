@@ -650,6 +650,12 @@ static int8 cpu_debit_4_load(p16_card_context* cardctx)
     memcpy(cardctx->tac, cmd.rbuffer, 4);
     return 0;
 }
+
+static int8 cpu_get_purchase_card_prove(p16_card_context* cardctx)
+{
+	return 0;
+}
+
 static int8 cpu_get_card_prove(p16_card_context* cardctx)
 {
     int ret;
@@ -1102,7 +1108,7 @@ int8 read_user_purchase_card(p16_card_context* cardctx , char emsg[256])
     switch (cardctx->cardtype)
     {
     case CT_M1:
-        return 0;//m1_read_card(cardctx, emsg);
+        return -1;//m1_read_card(cardctx, emsg);
     case CT_CPU:
         return cpu_read_purchase_card(cardctx, emsg);
     default:
@@ -1232,6 +1238,26 @@ int8 get_card_prove(p16_card_context* cardctx)
     }
     return 0;
 }
+/**
+ * @brief - 读卡消费认证
+ * @param cardctx - 卡上下文
+ * @return - 返回 0 表示消费成功，1 表示消费不成功，-1 表示读卡失败
+ */
+int8 get_purchase_card_prove(p16_card_context* cardctx)
+{
+    switch (cardctx->cardtype)
+    {
+    case CT_M1:
+        return -1;
+    case CT_CPU:
+        return cpu_get_purchase_card_prove(cardctx);
+    default:
+        LOG((LOG_ERROR, "不支持卡类型"));
+        return -1;
+    }
+    return 0;
+}
+
 int8 sam_read_termno(uint8* termno)
 {
    p16pos.samport = 0x0d; // SAM1
