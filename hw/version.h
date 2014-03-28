@@ -1,0 +1,12 @@
+#ifndef _P16POS_VERSION_H_
+#define _P16POS_VERSION_H_
+
+#define MAJOR_VERSION 4
+#define MINOR_VERSION 5
+#define FIX_VERSION 0
+
+#define P16POS_VERSION "4.5.0"
+#define P16POS_VERSION_NUM 0x040500
+
+#endif
+
