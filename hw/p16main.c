@@ -114,12 +114,17 @@ static int load_sys_config()
 {
     if (SAFE_GET_CONFIG("dev.devphyid", p16pos.devphyid))
         return -1;
+	//读取黑名单版本号
+	char pos_blacklist_version[13] = {0};
+	if(SAFE_GET_CONFIG("dev.pos_blacklist_version",pos_blacklist_version))
+		return -1;
+	decode_hex(pos_blacklist_version, 12,p16pos.pos_blacklist_version);
     //LOG((LOG_DEBUG,"devphyid: %s",p16pos.devphyid));
     if (SAFE_GET_CONFIG("sys.appid", p16pos.appid))
         return -1;
     if (SAFE_GET_CONFIG("sys.appsecret", p16pos.appsecret))
         return -1;
-
+	//获取前置的ip和端口号
     if (SAFE_GET_CONFIG("svc.remotename", p16pos.remote[REMOTE_WIRE].u.host.host_name))
     {
         return -1;
@@ -141,6 +146,7 @@ static int load_sys_config()
     if (get_config_int("sys.cfgverno", &cfgverno))
     {
         p16pos.cfgverno = 0;
+		LOG((LOG_DEBUG,"获取sys.cfgverno失败"));
     }
     else
     {
@@ -546,6 +552,555 @@ static void do_check_desktop()
 }
 #endif
 //}}}
+/////////////////////////////组包函数////////////////////////////////////////
+static void get_blacklist_data(p16_tcp_blacklist_data* ptcp_blacklist_data)
+{
+	//get_order_array_by_int(0,ptcp_blacklist_data->machine_no,4);
+	//memset(ptcp_blacklist_data->pos_blacklist_version,0,6);
+
+	decode_hex(p16pos.devphyid, 8, ptcp_blacklist_data->machine_no);
+	memcpy(ptcp_blacklist_data->pos_blacklist_version,p16pos.pos_blacklist_version, 6);
+}
+
+
+static void get_heart_data(p16_tcp_heart_data* ptcp_heart_data)
+{
+	ptcp_heart_data->identify_code = 0x01;		
+	get_order_array_by_int(p16pos.cfgverno, ptcp_heart_data->cfgverno, 4);
+	decode_hex(p16pos.devphyid, 8, ptcp_heart_data->machine_no);
+	//get_order_array_by_int(5,ptcp_heart_data->machine_no,4);//就是devphyid
+}
+
+
+static int get_rt_transdtl_data(p16_tcp_transdtl* ptcp_rt_transdtl)
+{
+	int ret = 0;
+	p16_transdtl_t transdtl;
+	memset(&transdtl,0,sizeof transdtl);
+	ret = trans_get_last_record(&transdtl);
+	if(ret == 0)
+	{
+		//LOG((LOG_DEBUG,"无可取的消费流水"));
+		return -1;
+	}
+	//将该条记录设为已读取
+	transdtl.confirm = 1;
+	ret = trans_update_record(&transdtl);
+	if(ret)
+	{
+		//LOG((LOG_ERROR,"更新交易流水失败"));
+		return -2;
+	}
+	ptcp_rt_transdtl->devseqno= transdtl.devseqno;//表里的devseqno
+	get_order_array_by_int(transdtl.cardbefbal, ptcp_rt_transdtl->cardbefbal, 4);
+	get_order_array_by_int(transdtl.paycnt, ptcp_rt_transdtl->paycnt, 2);
+	get_order_array_by_int(transdtl.cardno, ptcp_rt_transdtl->cardno, 4);
+	if(transdtl.transflag == TRANS_WRITE_CARD_OK)
+	{
+		ptcp_rt_transdtl->transflag = 0x81;//10000001
+	}
+	else if(transdtl.transflag == TRANS_WRITE_CARD_FAILED)
+	{
+		ptcp_rt_transdtl->transflag = 0x83;//10000011
+	}
+	get_order_array_by_int(0, ptcp_rt_transdtl->additional, 3);//附加金额暂时为0
+	get_order_array_by_int(transdtl.amount, ptcp_rt_transdtl->transamt, 4);
+	decode_hex(transdtl.termno, 12, ptcp_rt_transdtl->termno);
+	get_order_array_by_int(0, ptcp_rt_transdtl->machine_no, 4);//机器号暂时填0
+	char transdatetime[15] = {0};
+	SAFE_GET_DATETIME("%y%m%d%H%M%S", transdatetime);
+	get_std_trans_datetime(transdatetime, ptcp_rt_transdtl->transdatetime, 6);
+	//decode_hex(transdatetime, 12, ptcp_rt_transdtl->transdatetime);//日期时间
+	
+		//打印日期时间
+	decode_hex(transdtl.tac, 8, ptcp_rt_transdtl->tac);
+	int buffer_len = sizeof(p16_tcp_transdtl)-2;
+	LOG((LOG_DEBUG,"参与crc的buffer_len=%d",buffer_len));
+	pb_protocol_crc((const uint8 *)ptcp_rt_transdtl, buffer_len, ptcp_rt_transdtl->crc);
+	return 0;
+}
+
+
+
+static int get_batch_transdtl_data(p16_tcp_transdtl* ptcp_transdtl, uint8* pdata_out_cnt)
+{
+	int init_len = (*pdata_out_cnt);
+	LOG((LOG_DEBUG,"进入get_batch_transdtl_data,data_out_cnt=%d",init_len));
+	int i = 0;
+	int ret = 0;
+	p16_transdtl_t transdtl;
+	for(i=0; i<init_len; i++)
+	{
+		LOG((LOG_DEBUG,"第%d个",i));
+		memset(&transdtl,0,sizeof transdtl);
+		ret = trans_get_last_record(&transdtl);
+		if(ret == 0)
+		{
+			LOG((LOG_DEBUG,"取交易流水结束，共%d个",i));
+			break;
+		}
+		else if(ret == -1)
+		{
+			LOG((LOG_DEBUG,"取交易流水失败，共%d个",i));
+			break;
+		}
+		//将该条记录设为已读取
+		transdtl.confirm = 1;
+		ret = trans_update_record(&transdtl);
+		if(ret)
+		{
+			LOG((LOG_ERROR,"更新交易流水失败，共%d个",i));
+			break;
+		}
+		ptcp_transdtl[i].devseqno= transdtl.devseqno;//表里的devseqno
+		//memcpy(ptcp_transdtl[i].cardbefbal, &transdtl.cardbefbal, 4);
+		get_order_array_by_int(transdtl.cardbefbal, ptcp_transdtl[i].cardbefbal, 4);
+		LOG((LOG_DEBUG,"卡交易前余额=%d",transdtl.cardbefbal));
+		p16dump_hex(LOG_DEBUG, ptcp_transdtl[i].cardbefbal, 4);
+		get_order_array_by_int(transdtl.paycnt, ptcp_transdtl[i].paycnt, 2);
+		get_order_array_by_int(transdtl.cardno, ptcp_transdtl[i].cardno, 4);
+		//ptcp_transdtl[i].transflag = 0x00;//消费成功，黑卡消费，写卡成功，写卡失败
+		if(transdtl.transflag == TRANS_WRITE_CARD_OK)
+		{
+			ptcp_transdtl[i].transflag = 0x81;//10000001
+		}
+		else if(transdtl.transflag == TRANS_WRITE_CARD_FAILED)
+		{
+			ptcp_transdtl[i].transflag = 0x83;//10000011
+		}
+		get_order_array_by_int(0, ptcp_transdtl[i].additional, 3);//附加金额暂时为0
+		get_order_array_by_int(transdtl.amount, ptcp_transdtl[i].transamt, 4);
+		decode_hex(transdtl.termno, 12, ptcp_transdtl[i].termno);
+		get_order_array_by_int(0, ptcp_transdtl[i].machine_no, 4);//机器号暂时填0
+		char transdatetime[15] = {0};
+		SAFE_GET_DATETIME("%y%m%d%H%M%S", transdatetime);
+		get_std_trans_datetime(transdatetime, ptcp_transdtl[i].transdatetime, 6);
+		//decode_hex(transdatetime, 12, ptcp_transdtl[i].transdatetime);//日期时间
+		//打印日期时间
+		decode_hex(transdtl.tac, 8, ptcp_transdtl[i].tac);
+		int buffer_len = sizeof(ptcp_transdtl[i])-2;
+		LOG((LOG_DEBUG,"buffer_len=%d",buffer_len));
+		pb_protocol_crc((const uint8 *)&ptcp_transdtl[i], buffer_len, ptcp_transdtl[i].crc);
+	}
+	if(i == 0)
+	{
+		LOG((LOG_DEBUG,"无批量流水需要上传"));
+		return -1;
+	}
+	(*pdata_out_cnt) = i; 		
+	return 0;
+}
+//////////////////////////////发送函数////////////////////////////////////
+static void send_download_blacklist_data(char* recv_buf, int* precv_len)
+{
+	p16_tcp_blacklist_package blacklist_package;
+	memcpy(blacklist_package.guide_code,"HST",3);
+	blacklist_package.cmd_code = 0xDA;//下载黑名单
+	get_order_array_by_int(0, blacklist_package.machine_addr, 2);
+	blacklist_package.package_len = 2+10;//机器地址+数据包长度
+	get_blacklist_data(&blacklist_package.data);
+	int send_len = 0;
+	char send_buff[2048] = {0};
+	pack_tcp_blacklist_data(&blacklist_package, send_buff, &send_len);
+	if(send_len>0)
+	{
+		//打印发送数据
+		LOG((LOG_DEBUG,"黑名单发送的串打印:"));
+		p16dump_hex(LOG_DEBUG,send_buff,send_len);
+		int ret = 0;
+		ret = tcp_send_data(send_buff, send_len, recv_buf, precv_len);
+		if(ret)
+		{
+			//tcp发送错误
+			return;
+		}
+	}
+}
+
+static void send_heart_data(char* recv_buf, int* precv_len)
+{
+	p16_tcp_heart_package heart_package;
+	memcpy(heart_package.guide_code,"HST",3);
+	heart_package.cmd_code = 0xD5;//心跳
+	get_order_array_by_int(0,heart_package.machine_addr,2);//机器地址暂时设为0
+	//数据包长度为机器地址加数据信息包长度
+	heart_package.package_len =  9 + 2;
+	get_heart_data(&heart_package.data);
+	int send_len = 0;
+	char send_buff[2048] = {0};
+	pack_tcp_heart_data(&heart_package, send_buff, &send_len);
+	if(send_len>0)
+	{
+		//打印发送数据
+		LOG((LOG_DEBUG,"心跳发送的串打印:"));
+		p16dump_hex(LOG_DEBUG,send_buff,send_len);
+		int ret = 0;
+		ret = tcp_send_data(send_buff, send_len, recv_buf, precv_len);
+	}
+
+}
+
+static int send_rt_transdtl_data(char* recv_buf, int* precv_len)
+{
+	p16_tcp_rt_package package;
+	memset(&package,0,sizeof package);
+	memcpy(package.guide_code,"HST",3);
+	package.cmd_code = 0xD2;//实时交易流水
+	get_order_array_by_int(0,package.machine_addr,2);//机器地址暂时设为0
+	int ret = 0;
+	ret = get_rt_transdtl_data(&package.data);
+	if(ret)
+	{
+		LOG((LOG_DEBUG,"尝试发送实时流水失败，原因=%d",ret));
+		return -1;
+	}
+	//数据包长度为机器地址加数据信息包长度
+	package.package_len =  sizeof(package.data) + sizeof(package.machine_addr);
+	
+	int send_len = 0;
+	char send_buff[2048] = {0};
+	pack_tcp_rt_transdtl_data(&package, send_buff, &send_len);
+	if(send_len>0)
+	{
+		//打印发送数据
+		LOG((LOG_DEBUG,"实时流水发送的串打印:"));
+		p16dump_hex(LOG_DEBUG,send_buff,send_len);
+		int ret = 0;
+		ret = tcp_send_data(send_buff, send_len, recv_buf, precv_len);
+	}
+	return 0;
+
+}
+
+static int send_batch_transdtl_data(char* recv_buf, int* precv_len)
+{
+	int ret = 0;
+	char send_buff[2048];//最终发送的数组
+	p16_tcp_batch_package batch_package;
+	uint32 send_len;
+	memset(&batch_package,0,sizeof batch_package);
+	batch_package.data.tcp_transdtl_cnt = MAX_TCP_TRANSDTL_CNT;
+	ret = get_batch_transdtl_data(batch_package.data.tcp_transdtl_list, &batch_package.data.tcp_transdtl_cnt);
+	if(ret)
+	{
+		LOG((LOG_DEBUG,"批量上传getdata失败"));
+		return -1;
+	}
+	if(batch_package.data.tcp_transdtl_cnt>0)
+	{
+		memset(send_buff,0,2048);
+		memcpy(batch_package.guide_code,"HST",3);
+		batch_package.cmd_code = 0xDB;//批量上传交易流水
+		get_order_array_by_int(0,batch_package.machine_addr,2);
+		//数据包长度为机器地址加数据信息包长度
+		batch_package.package_len = sizeof(batch_package.machine_addr)+ 
+					sizeof(batch_package.data.tcp_transdtl_cnt) + 
+					sizeof(p16_tcp_transdtl)*batch_package.data.tcp_transdtl_cnt;
+		LOG((LOG_DEBUG,"批量流水package_len=%d",batch_package.package_len));
+		send_len = 0;
+		pack_tcp_batch_data(&batch_package, send_buff, &send_len);//由于不是每次都是最大发送条数
+		if(send_len>0)
+		{
+			//打印发送数据
+			LOG((LOG_DEBUG,"send_len=%d,send_buff:",send_len));
+			p16dump_hex(LOG_DEBUG,send_buff,send_len);
+			ret = tcp_send_data(send_buff, send_len, recv_buf, precv_len);
+			/*
+			//分析recv_buf
+			p16_recv_batch_transdtl_package recv_batch_package;
+			parse_recv_data(recv_buf,1,&recv_batch_package);
+			if(recv_batch_package.ret_code > 0)//??
+			{
+				LOG((LOG_ERROR,"上传失败"));
+			}
+			*/
+		}
+	}
+	return 0;
+
+}
+
+
+////////////////////////解析接收数据//////////////////////////////////////
+static void parse_recv_heart(char* recv_buf, p16_recv_heart_package* recv_package)
+{
+	uint8 offset = 0;
+	//	   53 4C 56 
+	memcpy(recv_package->guide_code, recv_buf+offset, 3);
+	offset += 3;
+	//D5 
+	recv_package->cmd_code = recv_buf[offset];
+	offset += 1;
+	//13 00
+	memcpy(&recv_package->package_len, recv_buf+offset, 2);
+	offset += 2;
+	//00 00 
+	memcpy(recv_package->machine_addr, recv_buf+offset, 2);
+	offset += 2;
+//data部分
+	//00 
+	recv_package->data.ret_code = recv_buf[offset];
+	offset += 1;
+	//14 04 01 00 00 00 
+	memcpy(recv_package->data.current_blacklist_version, recv_buf+offset, 6);
+	offset += 6;
+	//0E 04 03 0B 19 19 ==> 14 04 03 11 25 25
+	memcpy(recv_package->data.server_datetime, recv_buf+offset, 6);
+	offset += 6;
+	//3B 00 00 00
+	memcpy(recv_package->data.cfgverno, recv_buf+offset, 4);
+//check
+	//   7C 
+	recv_package->check = recv_buf[offset];
+	offset += 1;
+}
+
+static void parse_recv_rt_transdtl(char* recv_buf, p16_recv_rt_transdtl_package* recv_package)
+{
+	uint8 offset = 0;
+	memcpy(recv_package->guide_code, recv_buf+offset, 3);
+	offset += 3;
+	recv_package->cmd_code = recv_buf[offset];
+	offset += 1;
+	memcpy(&recv_package->package_len, recv_buf+offset, 2);
+	offset += 2;
+	memcpy(recv_package->machine_addr, recv_buf+offset, 2);
+	offset += 2;
+	recv_package->data.ret_code = recv_buf[offset];
+	offset += 1;
+	recv_package->check = recv_buf[offset];
+	offset += 1;
+}
+
+static void parse_recv_batch_transdtl(char* recv_buf, p16_recv_batch_transdtl_package* recv_package)
+{
+	uint8 offset = 0;
+	memcpy(recv_package->guide_code, recv_buf+offset, 3);
+	offset += 3;
+	recv_package->cmd_code = recv_buf[offset];
+	offset += 1;
+	memcpy(&recv_package->package_len, recv_buf+offset, 2);
+	offset += 2;
+	memcpy(recv_package->machine_addr, recv_buf+offset, 2);
+	offset += 2;
+	recv_package->data.ret_code = recv_buf[offset];
+	offset += 1;
+	recv_package->check = recv_buf[offset];
+	offset += 1;
+
+}
+static void parse_recv_blacklist(char* recv_buf, p16_recv_blacklist_package* recv_package)
+{
+	uint8 offset = 0;
+	memcpy(recv_package->guide_code, recv_buf+offset, 3);
+	offset += 3;
+	recv_package->cmd_code = recv_buf[offset];
+	offset += 1;
+	memcpy(&recv_package->package_len, recv_buf+offset, 2);
+	offset += 2;
+	memcpy(recv_package->machine_addr, recv_buf+offset, 2);
+	offset += 2;
+	recv_package->data.list_cnt = recv_buf[offset];
+	offset += 1;
+	int i = 0;
+	int tmp_int = 0, tmp_flag = 0;
+	for(i=0; i<recv_package->data.list_cnt; i++)
+	{
+		memcpy(recv_package->data.blacklist_list[i].refno, recv_buf+offset, 4);
+		offset += 4;
+		recv_package->data.blacklist_list[i].flag = recv_buf[offset];
+		offset += 1;
+		memcpy(&tmp_int, recv_package->data.blacklist_list[i].refno, 4);
+		tmp_flag = recv_package->data.blacklist_list[i].flag;
+		LOG((LOG_DEBUG,"收到cardno=%d,flag=%d",tmp_int,tmp_flag));
+	}
+	memcpy(recv_package->data.sys_list_version, recv_buf+offset, 6);
+	offset += 6;
+	recv_package->check = recv_buf[offset];
+	offset += 1;
+}
+
+static void parse_recv_data(char* recv_buf, uint8 parse_type, void* parse_struct)
+{
+	switch(parse_type)
+	{
+		case 0:	//心跳返回	
+			LOG((LOG_ERROR,"解析心跳返回数据"));
+			parse_recv_heart(recv_buf,(p16_recv_heart_package*)parse_struct);
+			break;
+		case 1://批量上传流水返回
+			LOG((LOG_ERROR,"解析批量上传流水返回数据"));
+			parse_recv_batch_transdtl(recv_buf,(p16_recv_batch_transdtl_package*)parse_struct);
+			break;
+		case 2://下载黑名单返回
+			LOG((LOG_ERROR,"解析下载黑名单返回数据"));
+			parse_recv_blacklist(recv_buf,(p16_recv_blacklist_package*)parse_struct);
+			break;
+		case 3://实时上传流水返回
+			LOG((LOG_ERROR,"解析实时上传流水返回数据"));
+			parse_recv_rt_transdtl(recv_buf,(p16_recv_rt_transdtl_package*)parse_struct);
+			break;
+		default:
+			LOG((LOG_ERROR,"收到未知类型数据"));
+			break;
+	}
+		
+}
+static int save_blackcard_record(int list_cnt, p16_recv_blacklist_unit* black_card_list)
+{
+	if(list_cnt <= 0)
+		return -2;
+	int i = 0;
+	int ret = 0;
+	p16_blackcard_t blackcard;
+	int tmp_cardno = 0;
+	for(i=0; i<list_cnt; i++)
+	{
+		memset(&blackcard, 0, sizeof blackcard);
+		memcpy(&tmp_cardno,black_card_list[i].refno,sizeof(blackcard.cardno));
+		ret = blackcard_get_record_by_cardno(&blackcard, tmp_cardno);
+		blackcard.cardno = tmp_cardno;
+		blackcard.cardflag = black_card_list[i].flag;
+		if(ret == 0)//该卡号不存在，需要插入一条记录
+		{
+			ret = blackcard_add_record(&blackcard);
+		}
+		else if(ret == 1)//该卡已经存在，更新卡状态即可
+		{
+			ret = blackcard_update_record(&blackcard);
+		}
+		//
+		if(ret)
+		{
+			//致命错误
+			return -2;
+		}
+		
+	}
+	return 0;
+}
+
+
+static int check_send_transdtl()
+{
+	const int TRANSDTL_SLEEP_TM = 10;
+	const int HEART_SLEEP_TM = 30;
+	char recv_buf[1024] = {0};
+	int recv_len = 0;
+	int ret =0;
+	LOG((LOG_DEBUG,"进入check_send_transdtl"));
+	while (p16pos.app_running)
+	{
+		memset(recv_buf,0,1024);
+		recv_len = 0;
+		ret = send_rt_transdtl_data(recv_buf,&recv_len);
+		if(ret == 0)//发送实时流水成功的情况
+		{
+			if(recv_len>0)
+			{
+				p16_recv_rt_transdtl_package recv_package;
+				memset(&recv_package,0,sizeof(recv_package));
+				parse_recv_data(recv_buf,3,&recv_package);
+				if(recv_package.data.ret_code == 0)
+				{
+					LOG((LOG_DEBUG,"上传实时流水成功"));
+				}
+				else
+				{
+					LOG((LOG_DEBUG,"上传实时流水失败，pos机不再上传流水"));
+				}
+			}
+			LOG((LOG_DEBUG,"=========================sleep %d========================",TRANSDTL_SLEEP_TM));
+			sleep(TRANSDTL_SLEEP_TM);
+		}
+		else//没有交易流水需要发送
+		{
+			//发送心跳
+			send_heart_data(recv_buf,&recv_len);
+			if(recv_len>0)
+			{
+				//分析接收的数据
+				p16_recv_heart_package recv_heart;
+				parse_recv_data(recv_buf,0,&recv_heart);
+
+				LOG((LOG_DEBUG,"心跳收到的系统版本号:"));
+				p16dump_hex(LOG_DEBUG,recv_heart.data.cfgverno,4);
+				LOG((LOG_DEBUG,"心跳收到的服务器时间:"));
+				p16dump_hex(LOG_DEBUG,recv_heart.data.server_datetime,6);
+				LOG((LOG_DEBUG,"心跳收到的服务器黑名单版本号:"));
+				p16dump_hex(LOG_DEBUG,recv_heart.data.current_blacklist_version,6);
+				LOG((LOG_DEBUG,"当前系统的黑名单版本号:"));
+				p16dump_hex(LOG_DEBUG,p16pos.pos_blacklist_version, 6);
+				if(memcmp(recv_heart.data.current_blacklist_version,p16pos.pos_blacklist_version, 6)>0)
+				{
+					LOG((LOG_DEBUG,"心跳收到的黑名单版本号大于当前系统的黑名单版本号，执行下载黑名单函数!!"));
+					//下载黑名单
+					memset(recv_buf,0,1024);
+					recv_len = 0;
+					send_download_blacklist_data(recv_buf,&recv_len);
+					if(recv_len>0)
+					{
+						p16_recv_blacklist_package recv_package;
+						parse_recv_data(recv_buf, 2, &recv_package);
+						if(recv_package.data.list_cnt>0)
+						{
+							//有黑名单
+							LOG((LOG_DEBUG,"有黑名单%d条",recv_package.data.list_cnt));
+							ret = save_blackcard_record(recv_package.data.list_cnt, recv_package.data.blacklist_list);
+							if(ret)
+							{
+								//致命错误，联系管理员
+								disp_msg("操作数据库失败，请联系管理员",10);
+								return -1;
+							}
+							//更新系统黑名单版本号
+							char pos_blacklist_version[13] = {0};
+							encode_hex(recv_package.data.sys_list_version, 6, pos_blacklist_version);
+							//更新系统版本号
+							ret = update_config("dev.pos_blacklist_version",pos_blacklist_version);
+							if(ret)
+							{
+								//致命错误
+								return -2;
+							}
+							memcpy(p16pos.pos_blacklist_version, recv_package.data.sys_list_version, 6);
+							LOG((LOG_DEBUG,"更新版本号为:%s",pos_blacklist_version));
+							LOG((LOG_DEBUG,"======================================================="));
+						}
+					}
+
+				}
+			}
+			LOG((LOG_DEBUG,"=========================sleep %d========================",HEART_SLEEP_TM));
+			sleep(HEART_SLEEP_TM);
+		}
+		
+	}
+    return 0;
+}
+static void send_transdtl(void* args)
+{
+	LOG((LOG_DEBUG,"进入send_transdtl"));
+	int ret = check_send_transdtl();
+	if(ret)
+	{
+		LOG((LOG_DEBUG,"致命错误，即将退出线程"));
+	}
+	LOG((LOG_DEBUG,"进入pthread_exit(0)"));
+    pthread_exit(0);
+}
+
+static void open_send_transdtl_thread()
+{
+    pthread_t pid;
+    int ret;
+    ret = pthread_create(&pid, NULL, (void*)&send_transdtl, NULL);
+    if (ret)
+    {
+        LOG((LOG_ERROR, "创建上传流水线程失败"));
+        return;
+    }
+}
 
 
 int main(int argc, char* const argv[])
@@ -564,6 +1119,15 @@ int main(int argc, char* const argv[])
     {
         error_exit(1, "初始化参数失败");
     }
+	/*
+	//插入一条黑名单测试数据
+	p16_blackcard_t blackcard_t;
+	blackcard_t.cardno = 184;
+	blackcard_t.cardflag = 1;
+	memcpy(blackcard_t.remark, "aaa", 3);
+	blackcard_update_record(&blackcard_t);
+	//
+	*/
     ret = load_sys_config();
     if (ret)
     {
@@ -583,6 +1147,8 @@ int main(int argc, char* const argv[])
 
     p16pos.app_running = 1;
     show_statusbar();
+	//创建上传流水线程
+	open_send_transdtl_thread();
 
     // 显示主菜单
 	init_purchase_menu();

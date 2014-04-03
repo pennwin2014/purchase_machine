@@ -463,6 +463,7 @@ static int do_card_purchase(uint32 money)
         return ret;
     }
 	/*
+	//由于后面写卡之后还会调用这一步骤，所以这里不用了
     // 步骤5:消费确认
     ret = debit_4_purchase(&p16card);
     if(ret)
@@ -474,7 +475,7 @@ static int do_card_purchase(uint32 money)
 	
     //步骤6: 记录流水
     p16_transdtl_t transdtl;
-    memset(&transdtl, 0, sizeof transdtl);
+	memset(&transdtl, 0, sizeof transdtl);
     transdtl.cardno = p16card.cardno;
     transdtl.operid = p16pos.operid;
     SAFE_STR_CPY(transdtl.transdate, p16card.termdate);
@@ -490,6 +491,7 @@ static int do_card_purchase(uint32 money)
     transdtl.confirm = 0;
     transdtl.transflag = TRANS_INIT;
     transdtl.devseqno = p16pos.termseqno;
+	
     transdtl.authcode = p16pos.authcode;
     transdtl.batchno = p16pos.batchno;
     transdtl.termid = p16pos.termid;
@@ -788,6 +790,24 @@ static int do_card(uint32 money)
 //   {INPUT_MAX_LEN ,  8, 0},
 //   {0xffff ,       0 , 0}
 // } ;
+int check_blackcard(int cardno)
+{
+	int ret = 0;
+	p16_blackcard_t blackcard_t;
+	ret = blackcard_get_record_by_cardno(&blackcard_t, cardno);
+	if(ret)
+	{
+		if(ret == 1)
+		{
+			if(blackcard_t.cardflag == 0)//挂失状态
+				return -1;
+		}
+		else
+			return -2;
+	}
+	return 0;
+}
+
 
 static int deposit_check_transdtl()
 {
@@ -1068,8 +1088,8 @@ static void do_main_purchase_loop()
     char tip[64];
     while(1)
     {
-		//1.数据库信息
-
+		//1.检查数据库信息
+		//在另一个线程里做了这一步
 		//2.读取卡信息
 		ret = do_waiting_purchase_card(p16card.cardphyid);
         if(ret == -1)
@@ -1085,6 +1105,19 @@ static void do_main_purchase_loop()
         {
             continue;
         }
+		//2.5 检查该卡是否在黑名单列表
+		ret = check_blackcard(p16card.cardno);
+		if(ret == -1)
+		{
+			disp_msg("该卡已挂失,不能消费", 5);
+			return;
+		}
+		else if(ret == -2)
+		{
+			//致命错误
+			disp_msg("系统错误，请联系管理员", 10);
+       		return;
+		}
 		//3.输入消费金额
         CLEAR_SCREEN;
         sprintf(tip, "余额%d.%02d元", p16card.cardbefbal / 100, p16card.cardbefbal % 100);

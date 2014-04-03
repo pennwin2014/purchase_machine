@@ -24,6 +24,9 @@ void hex_to_bcd(const uint8* hex, uint8 len, uint8* bcd);
 void set_disp_msg_font(uint8 hz, uint8 asc);
 void disp_msg(const char* emsg, uint8 timeout);
 int is_number_key(uint8 key, uint8* value);
+void get_order_array_by_int(int input, uint8* output, uint32 out_len);//int转到uint8数组低位在前
+void get_std_trans_datetime(const char* input_str, uint8* output, uint32 output_len);//将字符串时间日期转成十六进制
+
 
 typedef int (* disp_callback)(void* userp, uint8 timeout, uint8 est);
 int disp_msg_callback(const char* emsg, uint8 timeout, disp_callback callback,

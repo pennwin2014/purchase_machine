@@ -33,6 +33,37 @@ uint32 get_time_tick()
     return (uint32)tv.tv_sec;
 }
 
+void get_std_trans_datetime(const char* input_str, uint8* output, uint32 output_len)
+{
+//140403103922 ==> '14','4','3','10','39','22'
+	int i = 0;
+	char tmpstr[2+1];
+	uint16 tmpint = 0;
+	uint32 offset = 0;
+	for(i=0; i<output_len; i++)
+	{
+		memset(tmpstr, 0, 3);
+		memcpy(tmpstr, input_str+offset, 2);
+		tmpint = atoi(tmpstr);
+		output[i] = (uint8)tmpint;
+		offset += 2;
+	}
+}
+
+void get_order_array_by_int(int input, uint8* output, uint32 out_len)
+{
+	uint8 tmp_int[5] = {0};
+	memcpy(tmp_int,&input,4);
+	
+	int i = 0;
+	for(i=0;i<out_len;i++)
+	{
+		output[i] = tmp_int[i];
+	}
+	
+}
+
+
 void encode_hex(uint8* input, uint32 len, char* output)
 {
     int i, j;

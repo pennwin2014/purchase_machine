@@ -107,19 +107,20 @@ static int8 do_initial_syspara()
         {"sys.remoteip", "192.168.1.200"},
         {"sys.remoteport", "8080"},
         {"sys.updatesvrip", "192.168.1.44"},
-        {"dev.devphyid", ""},
+        {"dev.devphyid", "0157110226"},
         {"dev.ip", "192.168.1.23"},
         {"dev.netmask", "255.255.255.0"},
         {"dev.gateway", "192.168.1.1"},
         {"sys.appid", "500000"},
         {"sys.appsecret", "dafd8bd1ca659d8ded20bbacc123"},
-        {"svc.remotename", "192.168.1.200"},
-        {"svc.remoteport", "8080"},
+        {"svc.remotename", "192.168.1.148"},
+        {"svc.remoteport", "9001"},
         {"svc.remoteurl", "/yktapi/services"},
         {"sys.printerpages", "1"},
         {"sys.cfgverno", "0"},
         {"sys.workmode", "0"},
         {"sys.heartbeatminutes", "3"},
+        {"dev.pos_blacklist_version", "000000000000"},
         {NULL, NULL},
     };
     int rc;
@@ -300,6 +301,22 @@ int8 check_config_db()
             return -1;
         }
     }
+	//检测并创建t_blackcard表
+	ret = sql_exec_stmt(cfg_db, "SELECT COUNT(*) FROM T_BLACKCARD");
+    if (ret)
+    {
+		ret = sql_exec_stmt(cfg_db, "CREATE TABLE T_BLACKCARD( \
+			CARDNO INTEGER NOT NULL,\
+			CARDFLAG INTEGER,\
+			REMARK VARCHAR(256),\
+			PRIMARY KEY (CARDNO))");
+
+        if (ret)
+        {
+            LOG((LOG_ERROR, "创建黑卡表失败"));
+            return -1;
+        }
+    }
     return 0;
 }
 void close_config_db()
@@ -364,7 +381,85 @@ int8 get_config_int(const char* paraname, int* paraval)
     *paraval = atoi(temp);
     return 0;
 }
+/////////////////////////////////////////////////////////////////////////////////////
+int8 blackcard_add_record(p16_blackcard_t* record)
+{
+    char sql[1024];
+    strcpy(sql, "INSERT INTO T_BLACKCARD(CARDNO,CARDFLAG,REMARK)VALUES(?,?,?);");
 
+    int rc;
+    sqlite_result_set_t* rs = NULL;
+    rc = sql_execute(cfg_db, sql, &rs);
+    if (rc)
+    {
+        return -1;
+    }    
+    sqlite3_bind_int(rs->stmt, 1, record->cardno);
+	sqlite3_bind_int(rs->stmt, 2, record->cardflag);
+	sqlite3_bind_text(rs->stmt, 3, record->remark, -1, SQLITE_STATIC);
+    rc = sqlite3_step(rs->stmt);
+    sql_free_resultset(rs);
+    if (rc != SQLITE_DONE)
+    {
+        LOG((LOG_ERROR, "增加数据错误。rc=%d,msg=[%s]", rc , sqlite3_errmsg(cfg_db)));
+        return -1;
+    }
+    return 0;
+
+}
+int8 blackcard_get_record_by_cardno(p16_blackcard_t* record, int cardno)
+{
+    char sql[1024];
+    sprintf(sql, "SELECT CARDNO,CARDFLAG,REMARK FROM T_BLACKCARD WHERE CARDNO=%d", cardno);
+    sqlite_result_set_t* rs = NULL;
+    int rc;
+    if (sql_execute(cfg_db, sql, &rs))
+        return -1;
+
+    if (!sql_fetch_resultset(rs))
+    {
+        record->cardno = sqlite3_column_int(rs->stmt, 0);
+		record->cardflag = sqlite3_column_int(rs->stmt, 1);
+		SAFE_STR_CPY(record->remark, sqlite3_column_text(rs->stmt, 2));
+        rc = 1;
+    }
+    else
+    {
+        LOG((LOG_ERROR, "本地无黑卡记录"));
+        rc = 0;
+    }
+    sql_free_resultset(rs);
+    return rc;
+}
+
+//根据cardno来查找对应的记录并更新该记录的状态和注释
+int8 blackcard_update_record(p16_blackcard_t* record)
+{
+    char sql[1024];
+    strcpy(sql, "UPDATE T_BLACKCARD SET CARDFLAG=?,REMARK=? WHERE CARDNO=?");
+
+    int rc;
+    sqlite_result_set_t* rs = NULL;
+    rc = sql_execute(cfg_db, sql, &rs);
+    if (rc)
+    {
+        return -1;
+    }
+	sqlite3_bind_int(rs->stmt, 1, record->cardflag);
+    sqlite3_bind_text(rs->stmt, 2, record->remark, -1, SQLITE_STATIC);
+	//where
+    sqlite3_bind_int(rs->stmt, 3, record->cardno);
+    rc = sqlite3_step(rs->stmt);
+    if (rc != SQLITE_DONE)
+    {
+        LOG((LOG_ERROR, "更新数据错误。rc=%d,msg=[%s]", rc, sqlite3_errmsg(cfg_db)));
+        return -1;
+    }
+    return 0;
+}
+
+
+///////////////////////////////////////////////////////////////////////////////////////////
 int8 trans_add_record(p16_transdtl_t* record)
 {
     char sql[1024];
@@ -409,6 +504,7 @@ int8 trans_add_record(p16_transdtl_t* record)
     }
     return 0;
 }
+
 int8 trans_get_last_record(p16_transdtl_t* record)
 {
     char sql[1024];
@@ -470,7 +566,6 @@ int8 trans_update_record(p16_transdtl_t* record)
     {
         return -1;
     }
-
 
     sqlite3_bind_text(rs->stmt, 1, record->cardphyid, -1, SQLITE_STATIC);
     sqlite3_bind_int(rs->stmt, 2, record->cardbefbal);

@@ -25,6 +25,11 @@
 
 #define DESKTOP_JPG "../res/jpg/p16deposit_desktop.jpg"
 
+//tcp一次性发送的最大的流水条数
+#define MAX_TCP_TRANSDTL_CNT 20 
+#define MAX_RECV_BLACKLIST_CNT 100
+
+
 // 是否支持 SAM 卡
 #define ENABLE_SAM 1
 // 是否支持打印机
@@ -154,6 +159,8 @@ typedef struct
     int heartbeat_minutes;
     // 签到后的 check_num
     char check_num[21];
+	//pos机的黑名单版本号
+	uint8 pos_blacklist_version[6];
 } p16_context;
 
 typedef struct
